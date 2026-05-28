@@ -18,12 +18,14 @@ import pdfParse from "pdf-parse";
  * Returns the document ID.
  */
 export async function processDocument(
-  file: File
+  file: File,
+  userId: string
 ): Promise<{ documentId: string }> {
   // 1. Create document record (status: processing)
   const [doc] = await db
     .insert(documents)
     .values({
+      userId,
       name: file.name,
       mimeType: file.type,
       status: "processing",
@@ -34,7 +36,8 @@ export async function processDocument(
     // 2. Extract text from PDF
     const buffer = Buffer.from(await file.arrayBuffer());
     const parsed = await pdfParse(buffer);
-    const text = parsed.text;
+    // pdf-parse can emit null bytes; Postgres rejects them in text columns.
+    const text = parsed.text.replace(/\u0000/g, "");
 
     if (!text || text.trim().length === 0) {
       throw new Error("No text could be extracted from this PDF");

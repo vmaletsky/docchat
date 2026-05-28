@@ -46,12 +46,16 @@ async function vectorSearch(
   limit: number
 ): Promise<Array<{ id: number; rank: number }>> {
   const embeddingStr = `[${queryEmbedding.join(",")}]`;
+  const idList = sql.join(
+    documentIds.map((id) => sql`${id}::uuid`),
+    sql`, `
+  );
 
   const results = await db.execute(sql`
     SELECT c.id,
            1 - (c.embedding <=> ${embeddingStr}::vector) as similarity
     FROM chunks c
-    WHERE c.document_id = ANY(${documentIds}::uuid[])
+    WHERE c.document_id IN (${idList})
       AND c.embedding IS NOT NULL
     ORDER BY c.embedding <=> ${embeddingStr}::vector
     LIMIT ${limit}
@@ -71,14 +75,18 @@ async function fulltextSearch(
   documentIds: string[],
   limit: number
 ): Promise<Array<{ id: number; rank: number }>> {
-  // Convert natural language query to tsquery
-  // plainto_tsquery handles this safely without SQL injection risk
+  const idList = sql.join(
+    documentIds.map((id) => sql`${id}::uuid`),
+    sql`, `
+  );
+
+  // Use the generated search_vector column so the GIN index is hit.
   const results = await db.execute(sql`
     SELECT c.id,
-           ts_rank_cd(to_tsvector('english', c.content), plainto_tsquery('english', ${query})) as rank_score
+           ts_rank_cd(c.search_vector, plainto_tsquery('english', ${query})) as rank_score
     FROM chunks c
-    WHERE c.document_id = ANY(${documentIds}::uuid[])
-      AND to_tsvector('english', c.content) @@ plainto_tsquery('english', ${query})
+    WHERE c.document_id IN (${idList})
+      AND c.search_vector @@ plainto_tsquery('english', ${query})
     ORDER BY rank_score DESC
     LIMIT ${limit}
   `);

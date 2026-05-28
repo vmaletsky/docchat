@@ -5,6 +5,8 @@ import { FileText, Upload, X } from "lucide-react";
 
 interface DropAreaProps {
   file: File | null;
+  // Display-only name shown when there's no real File (e.g. a resumed conversation).
+  fileName?: string | null;
   onFileSelected: (file: File) => void;
   onClear: () => void;
   accept?: string;
@@ -17,6 +19,7 @@ interface DropAreaProps {
 
 export function DropArea({
   file,
+  fileName,
   onFileSelected,
   onClear,
   accept = ".pdf",
@@ -28,6 +31,7 @@ export function DropArea({
 }: DropAreaProps) {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const displayName = file?.name ?? fileName ?? null;
 
   function accepts(candidate: File): boolean {
     if (acceptMimeTypes.length > 0 && !acceptMimeTypes.includes(candidate.type)) {
@@ -62,7 +66,7 @@ export function DropArea({
     ? "border-gray-200 bg-gray-50 cursor-not-allowed"
     : dragOver
       ? "border-blue-500 bg-blue-50"
-      : file
+      : displayName
         ? "border-green-400 bg-green-50"
         : "border-gray-300 hover:border-gray-400 cursor-pointer";
 
@@ -75,7 +79,7 @@ export function DropArea({
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
       onClick={() => {
-        if (!disabled && !file) inputRef.current?.click();
+        if (!disabled && !displayName) inputRef.current?.click();
       }}
       className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${stateClass} ${className}`}
     >
@@ -87,10 +91,10 @@ export function DropArea({
         onChange={handleSelect}
         className="hidden"
       />
-      {file ? (
+      {displayName ? (
         <div className="flex items-center justify-center gap-2 text-green-700">
           <FileText size={20} />
-          <span className="truncate max-w-xs">{file.name}</span>
+          <span className="truncate max-w-xs">{displayName}</span>
           <button
             type="button"
             onClick={(e) => {

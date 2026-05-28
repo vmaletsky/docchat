@@ -5,12 +5,18 @@
  */
 
 import { processDocument } from "@/lib/ingest";
+import { auth } from "@/auth";
 import { NextRequest } from "next/server";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 const ALLOWED_TYPES = ["application/pdf"];
 
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
 
@@ -33,7 +39,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { documentId } = await processDocument(file);
+    const { documentId } = await processDocument(file, session.user.id);
     return Response.json({ documentId, status: "processing" });
   } catch (error) {
     console.error("Upload processing error:", error);

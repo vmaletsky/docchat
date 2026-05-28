@@ -7,12 +7,25 @@ import {
   vector,
   index,
   serial,
+  customType,
+  primaryKey,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import type { AdapterAccountType } from "next-auth/adapters";
+
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return "tsvector";
+  },
+});
 
 // ─── Documents ───────────────────────────────────────────────
 // Each uploaded file becomes a document record
 export const documents = pgTable("documents", {
   id: uuid("id").primaryKey().defaultRandom(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   // Original filename
   mimeType: text("mime_type").notNull(),
@@ -48,8 +61,10 @@ export const chunks = pgTable(
     pageNumber: integer("page_number"),
     // OpenAI text-embedding-3-small outputs 1536 dimensions
     embedding: vector("embedding", { dimensions: 1536 }),
-    // For full-text search (hybrid search)
-    searchVector: text("search_vector"),
+    // Auto-populated tsvector from content; backs the GIN index for FTS.
+    searchVector: tsvector("search_vector").generatedAlwaysAs(
+      sql`to_tsvector('english', "content")`
+    ),
   },
   (table) => ({
     // HNSW index for fast vector similarity search
@@ -67,6 +82,9 @@ export const chunks = pgTable(
 // ─── Conversations ───────────────────────────────────────────
 export const conversations = pgTable("conversations", {
   id: uuid("id").primaryKey().defaultRandom(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
   title: text("title").notNull().default("New conversation"),
   // Which documents this conversation is about
   documentIds: uuid("document_ids").array().notNull().default([]),
@@ -100,3 +118,56 @@ export type Chunk = typeof chunks.$inferSelect;
 export type NewChunk = typeof chunks.$inferInsert;
 export type Conversation = typeof conversations.$inferSelect;
 export type Message = typeof messages.$inferSelect;
+
+// ─── Auth.js tables ──────────────────────────────────────────
+// Schema dictated by @auth/drizzle-adapter — column names cannot change.
+
+export const users = pgTable("users", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  name: text("name"),
+  email: text("email").unique(),
+  emailVerified: timestamp("emailVerified", { mode: "date", withTimezone: true }),
+  image: text("image"),
+});
+
+export const accounts = pgTable(
+  "accounts",
+  {
+    userId: text("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: text("type").$type<AdapterAccountType>().notNull(),
+    provider: text("provider").notNull(),
+    providerAccountId: text("providerAccountId").notNull(),
+    refresh_token: text("refresh_token"),
+    access_token: text("access_token"),
+    expires_at: integer("expires_at"),
+    token_type: text("token_type"),
+    scope: text("scope"),
+    id_token: text("id_token"),
+    session_state: text("session_state"),
+  },
+  (acc) => [
+    primaryKey({ columns: [acc.provider, acc.providerAccountId] }),
+  ]
+);
+
+export const sessions = pgTable("sessions", {
+  sessionToken: text("sessionToken").primaryKey(),
+  userId: text("userId")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  expires: timestamp("expires", { mode: "date", withTimezone: true }).notNull(),
+});
+
+export const verificationTokens = pgTable(
+  "verificationToken",
+  {
+    identifier: text("identifier").notNull(),
+    token: text("token").notNull(),
+    expires: timestamp("expires", { mode: "date", withTimezone: true }).notNull(),
+  },
+  (vt) => [primaryKey({ columns: [vt.identifier, vt.token] })]
+);
