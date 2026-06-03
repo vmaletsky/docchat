@@ -13,6 +13,7 @@ import { messages, conversations, documents } from "@/db/schema";
 import { auth } from "@/auth";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { chatRatelimit } from "@/lib/ratelimit";
 
 const requestSchema = z.object({
   conversationId: z.string().uuid(),
@@ -41,6 +42,21 @@ export async function POST(req: Request) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   const userId = session.user.id;
+
+  const { success, limit, remaining, reset } = await chatRatelimit.limit(userId);
+  if (!success) {
+    return Response.json(
+      { error: "Too many requests. Please wait before sending another message." },
+      {
+        status: 429,
+        headers: {
+          "X-RateLimit-Limit": String(limit),
+          "X-RateLimit-Remaining": String(remaining),
+          "X-RateLimit-Reset": String(reset),
+        },
+      }
+    );
+  }
 
   const body = await req.json();
   const parsed = requestSchema.safeParse(body);
