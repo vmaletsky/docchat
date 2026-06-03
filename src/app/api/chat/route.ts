@@ -11,7 +11,7 @@ import { retrieveChunks } from "@/lib/retrieval";
 import { db } from "@/db";
 import { messages, conversations, documents } from "@/db/schema";
 import { auth } from "@/auth";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, desc } from "drizzle-orm";
 import { z } from "zod";
 import { chatRatelimit } from "@/lib/ratelimit";
 
@@ -32,7 +32,11 @@ async function summarizeAsTitle(message: string): Promise<string | null> {
       "Use title case. Do not wrap it in quotes or add trailing punctuation.",
     prompt: message,
   });
-  const title = text.trim().replace(/^["']+|["']+$/g, "").trim().slice(0, 80);
+  const title = text
+    .trim()
+    .replace(/^["']+|["']+$/g, "")
+    .trim()
+    .slice(0, 80);
   return title.length > 0 ? title : null;
 }
 
@@ -43,10 +47,13 @@ export async function POST(req: Request) {
   }
   const userId = session.user.id;
 
-  const { success, limit, remaining, reset } = await chatRatelimit.limit(userId);
+  const { success, limit, remaining, reset } =
+    await chatRatelimit.limit(userId);
   if (!success) {
     return Response.json(
-      { error: "Too many requests. Please wait before sending another message." },
+      {
+        error: "Too many requests. Please wait before sending another message.",
+      },
       {
         status: 429,
         headers: {
@@ -54,7 +61,7 @@ export async function POST(req: Request) {
           "X-RateLimit-Remaining": String(remaining),
           "X-RateLimit-Reset": String(reset),
         },
-      }
+      },
     );
   }
 
@@ -76,12 +83,17 @@ export async function POST(req: Request) {
       .select({ id: conversations.id, title: conversations.title })
       .from(conversations)
       .where(
-        and(eq(conversations.id, conversationId), eq(conversations.userId, userId))
+        and(
+          eq(conversations.id, conversationId),
+          eq(conversations.userId, userId),
+        ),
       ),
     db
       .select({ id: documents.id })
       .from(documents)
-      .where(and(eq(documents.userId, userId), inArray(documents.id, documentIds))),
+      .where(
+        and(eq(documents.userId, userId), inArray(documents.id, documentIds)),
+      ),
   ]);
 
   if (ownedConv.length === 0 || ownedDocs.length !== documentIds.length) {
@@ -108,7 +120,7 @@ export async function POST(req: Request) {
     .select({ role: messages.role, content: messages.content })
     .from(messages)
     .where(eq(messages.conversationId, conversationId))
-    .orderBy(messages.createdAt)
+    .orderBy(desc(messages.createdAt))
     .limit(10);
 
   // 4. Save user message
@@ -121,7 +133,10 @@ export async function POST(req: Request) {
   // For a brand-new conversation, derive a title from this first message.
   // Done before streaming so the title is persisted by the time the client
   // refreshes its conversation list. Failures here are non-fatal.
-  if (history.length === 0 && ownedConv[0].title === DEFAULT_CONVERSATION_TITLE) {
+  if (
+    history.length === 0 &&
+    ownedConv[0].title === DEFAULT_CONVERSATION_TITLE
+  ) {
     try {
       const title = await summarizeAsTitle(message);
       if (title) {
