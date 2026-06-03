@@ -11,8 +11,8 @@ Upload PDFs → ask questions → get answers grounded in your documents with so
 │  Next.js App (Frontend + API)                           │
 │                                                         │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────────┐  │
-│  │ Upload   │  │ Chat UI  │  │ Document Manager      │  │
-│  │ Dropzone │  │ Streaming│  │ List / Delete / Status │  │
+│  │ Upload   │  │ Chat UI  │  │ Document Tree Sidebar │  │
+│  │ Dropzone │  │ Streaming│  │ Documents + Threads   │  │
 │  └────┬─────┘  └────┬─────┘  └───────────────────────┘  │
 │       │              │                                   │
 │  ─────┼──────────────┼───── API Routes ────────────────  │
@@ -34,9 +34,9 @@ Upload PDFs → ask questions → get answers grounded in your documents with so
    │  • documents           │     └────────────────────┘
    │  • chunks + embeddings │
    │  • conversations       │     ┌────────────────────┐
-   │  • messages            │     │  Anthropic API     │
-   └────────────────────────┘     │  (chat completion) │
-                                  └────────────────────┘
+   │  • messages            │     │  OpenAI API        │
+   │  • users               │     │  (chat completion) │
+   └────────────────────────┘     └────────────────────┘
 ```
 
 ## Key Technical Decisions
@@ -73,18 +73,29 @@ Chat responses stream token-by-token via Vercel AI SDK + Server-Sent Events. No 
 - **Language**: TypeScript (strict mode)
 - **Database**: PostgreSQL + pgvector (hosted on Neon)
 - **ORM**: Drizzle
-- **LLM**: Anthropic Claude (via Vercel AI SDK)
+- **LLM**: OpenAI GPT-4o Mini (via Vercel AI SDK)
 - **Embeddings**: OpenAI text-embedding-3-small
+- **Auth**: Auth.js v5 (GitHub OAuth, Google OAuth, email/password credentials)
+- **Rate limiting**: Upstash Redis
 - **Styling**: Tailwind CSS
 - **Validation**: Zod
+
+## Features
+
+- **Per-user data isolation** — documents and conversations are scoped to the authenticated user
+- **Multiple auth methods** — GitHub OAuth, Google OAuth, or email/password registration
+- **Documents-first sidebar** — conversations are nested under their source document
+- **Rate limiting** — chat (per user/minute), uploads (10/hour), registration (5 attempts/hour per IP)
+- **Client-side file validation** — 20 MB limit with inline error feedback before upload
 
 ## Getting Started
 
 ### Prerequisites
-- Node.js 20+
+- Node.js 20+ and pnpm
 - A Neon account (free tier works) — [neon.tech](https://neon.tech)
-- OpenAI API key (for embeddings)
-- Anthropic API key (for chat)
+- OpenAI API key
+- GitHub OAuth app and/or Google OAuth credentials (for social login)
+- Upstash Redis database (free tier works) — [upstash.com](https://upstash.com)
 
 ### Setup
 
@@ -92,20 +103,44 @@ Chat responses stream token-by-token via Vercel AI SDK + Server-Sent Events. No 
 # Clone and install
 git clone https://github.com/YOUR_USERNAME/docchat.git
 cd docchat
-npm install
+pnpm install
 
 # Configure environment
 cp .env.example .env.local
-# Fill in DATABASE_URL, OPENAI_API_KEY, ANTHROPIC_API_KEY
+# Fill in the variables listed below
+```
 
-# Enable pgvector on your Neon database
-# Run the SQL in drizzle/0000_enable_pgvector.sql via Neon console
+**Required environment variables:**
 
-# Run migrations
-npm run db:push
+```env
+# Database
+DATABASE_URL=postgresql://...
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+
+# Auth.js
+AUTH_SECRET=<random secret — run: npx auth secret>
+
+# GitHub OAuth (https://github.com/settings/developers)
+AUTH_GITHUB_ID=...
+AUTH_GITHUB_SECRET=...
+
+# Google OAuth (https://console.cloud.google.com)
+AUTH_GOOGLE_ID=...
+AUTH_GOOGLE_SECRET=...
+
+# Upstash Redis (https://console.upstash.com)
+UPSTASH_REDIS_REST_URL=https://...
+UPSTASH_REDIS_REST_TOKEN=...
+```
+
+```bash
+# Enable pgvector and run migrations
+pnpm db:push
 
 # Start dev server
-npm run dev
+pnpm dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
@@ -116,22 +151,29 @@ Open [http://localhost:3000](http://localhost:3000).
 src/
 ├── app/
 │   ├── api/
+│   │   ├── auth/[...nextauth]/  # Auth.js handler
 │   │   ├── chat/route.ts        # Streaming chat endpoint
-│   │   ├── documents/route.ts   # Document CRUD
+│   │   ├── conversations/       # Conversation CRUD + message history
+│   │   ├── documents/route.ts   # Document listing
+│   │   ├── register/route.ts    # Email/password registration
 │   │   └── upload/route.ts      # File upload + ingestion
-│   ├── chat/                    # Chat page
-│   └── documents/               # Document management page
+│   ├── signin/                  # Sign-in page (OAuth + credentials)
+│   ├── register/                # Registration page
+│   ├── HomeClient.tsx           # Main app shell (client component)
+│   └── page.tsx                 # Auth-guarded entry point
+├── auth.ts                      # Auth.js config
 ├── components/
-│   ├── chat/                    # Chat UI components
-│   ├── documents/               # Upload, list components
-│   └── ui/                      # Shared UI primitives
+│   ├── chat/                    # ConversationsList
+│   ├── documents/               # DocumentsList, DocumentsTree (sidebar)
+│   └── ui/                      # Button, DropArea, TextInput
 ├── db/
 │   ├── index.ts                 # Database connection
-│   └── schema.ts                # Drizzle schema (documents, chunks, messages)
+│   └── schema.ts                # Drizzle schema (users, documents, chunks, conversations, messages)
 └── lib/
     ├── chunker.ts               # Recursive text splitter
     ├── embeddings.ts            # OpenAI embedding API wrapper
     ├── ingest.ts                # Document processing pipeline
+    ├── ratelimit.ts             # Upstash Redis rate limiting helpers
     └── retrieval.ts             # Hybrid search + RRF
 ```
 

@@ -9,6 +9,7 @@ interface DropAreaProps {
   fileName?: string | null;
   onFileSelected: (file: File) => void;
   onClear: () => void;
+  onRejected?: (reason: string) => void;
   accept?: string;
   acceptMimeTypes?: string[];
   maxSize?: number;
@@ -22,6 +23,7 @@ export function DropArea({
   fileName,
   onFileSelected,
   onClear,
+  onRejected,
   accept = ".pdf",
   acceptMimeTypes = ["application/pdf"],
   maxSize,
@@ -33,14 +35,14 @@ export function DropArea({
   const inputRef = useRef<HTMLInputElement>(null);
   const displayName = file?.name ?? fileName ?? null;
 
-  function accepts(candidate: File): boolean {
+  function validate(candidate: File): string | null {
     if (acceptMimeTypes.length > 0 && !acceptMimeTypes.includes(candidate.type)) {
-      return false;
+      return `Unsupported file type. Only PDF is supported.`;
     }
     if (maxSize !== undefined && candidate.size > maxSize) {
-      return false;
+      return `File too large. Maximum size is ${Math.round(maxSize / 1024 / 1024)} MB.`;
     }
-    return true;
+    return null;
   }
 
   function handleDrop(e: DragEvent<HTMLDivElement>) {
@@ -48,15 +50,18 @@ export function DropArea({
     setDragOver(false);
     if (disabled) return;
     const dropped = e.dataTransfer.files[0];
-    if (dropped && accepts(dropped)) {
-      onFileSelected(dropped);
-    }
+    if (!dropped) return;
+    const error = validate(dropped);
+    if (error) { onRejected?.(error); return; }
+    onFileSelected(dropped);
   }
 
   function handleSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selected = e.target.files?.[0];
-    if (selected && accepts(selected)) {
-      onFileSelected(selected);
+    if (selected) {
+      const error = validate(selected);
+      if (error) { onRejected?.(error); }
+      else { onFileSelected(selected); }
     }
     // Reset so selecting the same file again still fires onChange
     e.target.value = "";

@@ -54,7 +54,15 @@ export default function HomeClient() {
     setMessages([]);
   }
 
+  const MAX_UPLOAD_SIZE = 20 * 1024 * 1024;
+
   async function handleFileSelected(selected: File) {
+    if (selected.size > MAX_UPLOAD_SIZE) {
+      setErrorMessage("File too large. Maximum size is 20 MB.");
+      setUploadState("error");
+      return;
+    }
+
     setFile(selected);
     setUploadState("uploading");
     resetSession();
@@ -63,10 +71,17 @@ export default function HomeClient() {
       const formData = new FormData();
       formData.append("file", selected);
       const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
       if (!res.ok) {
-        throw new Error(data?.error ?? `Upload failed (${res.status})`);
+        let message = `Upload failed (${res.status})`;
+        try {
+          const data = await res.json();
+          message = data?.error ?? message;
+        } catch {
+          // Response was not JSON (e.g. 413 from HTTP layer)
+        }
+        throw new Error(message);
       }
+      const data = await res.json();
       setDocumentId(data.documentId);
       setUploadState("ready");
       setSidebarRefreshKey((k) => k + 1);
@@ -243,6 +258,11 @@ export default function HomeClient() {
           fileName={activeDocName}
           onFileSelected={handleFileSelected}
           onClear={handleClear}
+          onRejected={(reason) => {
+            setErrorMessage(reason);
+            setUploadState("error");
+          }}
+          maxSize={MAX_UPLOAD_SIZE}
           disabled={uploadState === "uploading" || isStreaming}
         />
 
