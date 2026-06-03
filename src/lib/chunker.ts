@@ -124,14 +124,3 @@ export function chunkText(
 
   return result;
 }
-
-/**
- * Estimate page number based on character position.
- * Rough heuristic: ~3000 chars per page for typical documents.
- */
-export function estimatePageNumber(
-  charOffset: number,
-  charsPerPage = 3000
-): number {
-  return Math.floor(charOffset / charsPerPage) + 1;
-}
