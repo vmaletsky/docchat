@@ -116,12 +116,14 @@ export async function POST(req: Request) {
     .join("\n\n---\n\n");
 
   // 3. Fetch conversation history (last 10 messages for context)
-  const history = await db
-    .select({ role: messages.role, content: messages.content })
-    .from(messages)
-    .where(eq(messages.conversationId, conversationId))
-    .orderBy(desc(messages.createdAt))
-    .limit(10);
+  const history = (
+    await db
+      .select({ role: messages.role, content: messages.content })
+      .from(messages)
+      .where(eq(messages.conversationId, conversationId))
+      .orderBy(desc(messages.createdAt))
+      .limit(10)
+  ).reverse();
 
   // 4. Save user message
   await db.insert(messages).values({
