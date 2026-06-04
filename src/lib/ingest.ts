@@ -10,7 +10,8 @@ import { db } from "@/db";
 import { documents, chunks, type NewChunk } from "@/db/schema";
 import { chunkText } from "./chunker";
 import { embedTexts } from "./embeddings";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { createHash } from "crypto";
 import pdfParse from "pdf-parse";
 
 /** pdf-parse can emit null bytes; Postgres rejects them in text columns. */
@@ -67,14 +68,26 @@ async function extractPages(buffer: Buffer): Promise<string[]> {
 }
 
 /**
- * Process an uploaded PDF file end-to-end.
- * Returns the document ID.
+ * Check for a duplicate upload and, if none, insert a document row in
+ * "processing" status. Returns immediately — does not run the pipeline.
  */
-export async function processDocument(
+export async function createDocumentRecord(
   file: File,
   userId: string
-): Promise<{ documentId: string }> {
-  // 1. Create document record (status: processing)
+): Promise<{ documentId: string; buffer: Buffer; deduplicated: boolean }> {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const contentHash = createHash("sha256").update(buffer).digest("hex");
+
+  const [existing] = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(and(eq(documents.userId, userId), eq(documents.contentHash, contentHash)))
+    .limit(1);
+
+  if (existing) {
+    return { documentId: existing.id, buffer, deduplicated: true };
+  }
+
   const [doc] = await db
     .insert(documents)
     .values({
@@ -82,23 +95,31 @@ export async function processDocument(
       name: file.name,
       mimeType: file.type,
       status: "processing",
+      contentHash,
     })
     .returning({ id: documents.id });
 
+  return { documentId: doc.id, buffer, deduplicated: false };
+}
+
+/**
+ * Run the full ingest pipeline for a document that already has a DB record.
+ * Intended to be passed to waitUntil() so it runs after the HTTP response.
+ */
+export async function runIngest(
+  documentId: string,
+  buffer: Buffer
+): Promise<void> {
   try {
-    // 2. Extract text from PDF, one entry per page
-    const buffer = Buffer.from(await file.arrayBuffer());
     const pages = await extractPages(buffer);
 
     if (pages.every((p) => !p || p.trim().length === 0)) {
       throw new Error("No text could be extracted from this PDF");
     }
 
-    // 3. Chunk each page independently so every chunk carries its
-    //    true page number (no more character-offset estimation).
     const pending: Array<{ content: string; pageNumber: number }> = [];
     pages.forEach((pageText, pageIdx) => {
-      if (!pageText || pageText.trim().length === 0) return; // skip blank pages
+      if (!pageText || pageText.trim().length === 0) return;
       const pageChunks = chunkText(pageText, {
         maxChunkSize: 1000,
         overlapSize: 200,
@@ -112,39 +133,27 @@ export async function processDocument(
       throw new Error("Document produced no chunks after splitting");
     }
 
-    // 4. Generate embeddings for all chunks (batched)
     const embeddings = await embedTexts(pending.map((c) => c.content));
 
-    // 5. Assemble records with a global, monotonic chunk index
     const chunkRecords: NewChunk[] = pending.map((c, i) => ({
-      documentId: doc.id,
+      documentId,
       content: c.content,
       chunkIndex: i,
       pageNumber: c.pageNumber,
       embedding: embeddings[i],
     }));
 
-    // Insert in batches of 50 to avoid query size limits
     const BATCH_SIZE = 50;
     for (let i = 0; i < chunkRecords.length; i += BATCH_SIZE) {
-      const batch = chunkRecords.slice(i, i + BATCH_SIZE);
-      await db.insert(chunks).values(batch);
+      await db.insert(chunks).values(chunkRecords.slice(i, i + BATCH_SIZE));
     }
 
-    // 6. Update document status
     const charCount = pages.reduce((sum, p) => sum + (p?.length ?? 0), 0);
     await db
       .update(documents)
-      .set({
-        status: "ready",
-        charCount,
-        chunkCount: chunkRecords.length,
-      })
-      .where(eq(documents.id, doc.id));
-
-    return { documentId: doc.id };
+      .set({ status: "ready", charCount, chunkCount: chunkRecords.length })
+      .where(eq(documents.id, documentId));
   } catch (error) {
-    // Mark document as failed
     await db
       .update(documents)
       .set({
@@ -152,8 +161,6 @@ export async function processDocument(
         errorMessage:
           error instanceof Error ? error.message : "Unknown error occurred",
       })
-      .where(eq(documents.id, doc.id));
-
-    throw error;
+      .where(eq(documents.id, documentId));
   }
 }

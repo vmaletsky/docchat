@@ -10,7 +10,9 @@ export async function Header() {
     <header className="flex items-center justify-between px-4 py-3 border-b">
       <span className="font-semibold">DocChat</span>
       <div className="flex items-center gap-3 text-sm">
-        <span className="text-gray-600">{session.user.email ?? session.user.name}</span>
+        <span className="text-gray-600">
+          {session.user.email ?? session.user.name}
+        </span>
         <form
           action={async () => {
             "use server";

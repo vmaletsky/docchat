@@ -6,6 +6,7 @@ import {
   integer,
   vector,
   index,
+  uniqueIndex,
   serial,
   customType,
   primaryKey,
@@ -40,10 +41,14 @@ export const documents = pgTable("documents", {
     .notNull()
     .default("processing"),
   errorMessage: text("error_message"),
+  contentHash: text("content_hash"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => ({
+  contentHashUserIdx: uniqueIndex("documents_user_content_hash_idx")
+    .on(table.userId, table.contentHash),
+}));
 
 // ─── Chunks ──────────────────────────────────────────────────
 // Document split into overlapping text chunks with embeddings

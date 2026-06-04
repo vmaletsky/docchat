@@ -14,9 +14,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-gray-50 text-gray-900 min-h-screen">
+      <body className="bg-gray-50 text-gray-900 h-screen flex flex-col overflow-hidden">
         <Header />
-        {children}
+        <div className="flex-1 min-h-0">
+          {children}
+        </div>
       </body>
     </html>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileText,
   Trash2,
@@ -11,6 +11,8 @@ import {
   ChevronRight,
   ChevronDown,
   Plus,
+  Upload,
+  X,
 } from "lucide-react";
 
 export interface DocumentItem {
@@ -36,6 +38,9 @@ interface DocumentsTreeProps {
   onNewChat?: (doc: DocumentItem) => void;
   onConversationSelect?: (conv: ConversationItem) => void;
   onDocumentDeleted?: (docId: string) => void;
+  onFileSelected?: (file: File) => void;
+  isUploading?: boolean;
+  onClose?: () => void;
 }
 
 export function DocumentsTree({
@@ -45,6 +50,9 @@ export function DocumentsTree({
   onNewChat,
   onConversationSelect,
   onDocumentDeleted,
+  onFileSelected,
+  isUploading = false,
+  onClose,
 }: DocumentsTreeProps) {
   const [docs, setDocs] = useState<DocumentItem[]>([]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
@@ -52,6 +60,8 @@ export function DocumentsTree({
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [dragDepth, setDragDepth] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -113,6 +123,37 @@ export function DocumentsTree({
     }
   }
 
+  function handleUploadClick() {
+    inputRef.current?.click();
+  }
+
+  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (f) onFileSelected?.(f);
+    e.target.value = "";
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    setDragDepth((d) => d + 1);
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    setDragDepth((d) => Math.max(0, d - 1));
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragDepth(0);
+    const f = e.dataTransfer.files?.[0];
+    if (f) onFileSelected?.(f);
+  }
+
   const convsByDocId = conversations.reduce<Record<string, ConversationItem[]>>(
     (acc, conv) => {
       const docId = conv.documentIds[0];
@@ -124,12 +165,66 @@ export function DocumentsTree({
     {}
   );
 
-  return (
-    <section className="flex flex-col">
-      <h2 className="px-4 pt-4 pb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-        Documents
-      </h2>
+  const isDragOver = dragDepth > 0;
 
+  return (
+    <section
+      className={`flex flex-col flex-1 relative transition-colors ${isDragOver ? "bg-blue-50" : ""}`}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        className="sr-only"
+        onChange={handleInputChange}
+      />
+
+      {isDragOver && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+          <div className="flex flex-col items-center gap-2 text-blue-600">
+            <Upload size={28} />
+            <span className="text-sm font-medium">Drop PDF to upload</span>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between px-4 pt-4 pb-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+          Documents
+        </h2>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={handleUploadClick}
+            disabled={isUploading}
+            aria-label="Upload document"
+            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isUploading ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Upload size={12} />
+            )}
+            Upload
+          </button>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close sidebar"
+              className="rounded p-1 text-gray-400 hover:bg-gray-100"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
       {loading ? (
         <div className="flex items-center gap-2 px-4 py-2 text-sm text-gray-500">
           <Loader2 size={14} className="animate-spin" />
@@ -240,6 +335,7 @@ export function DocumentsTree({
           })}
         </ul>
       )}
+      </div>
     </section>
   );
 }

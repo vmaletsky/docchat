@@ -4,7 +4,8 @@
  * Accepts PDF file upload, triggers ingestion pipeline.
  */
 
-import { processDocument } from "@/lib/ingest";
+import { createDocumentRecord, runIngest } from "@/lib/ingest";
+import { waitUntil } from "@vercel/functions";
 import { auth } from "@/auth";
 import { NextRequest } from "next/server";
 import { uploadRatelimit } from "@/lib/ratelimit";
@@ -55,8 +56,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { documentId } = await processDocument(file, session.user.id);
-    return Response.json({ documentId, status: "processing" });
+    const { documentId, buffer, deduplicated } = await createDocumentRecord(file, session.user.id);
+    if (!deduplicated) {
+      waitUntil(runIngest(documentId, buffer));
+    }
+    return Response.json({ documentId, status: deduplicated ? "ready" : "processing", deduplicated });
   } catch (error) {
     console.error("Upload processing error:", error);
     return Response.json(
