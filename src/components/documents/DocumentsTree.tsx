@@ -19,7 +19,6 @@ export interface DocumentItem {
   id: string;
   name: string;
   status: "processing" | "ready" | "error";
-  chunkCount: number;
   createdAt: string;
 }
 
@@ -268,9 +267,6 @@ export function DocumentsTree({
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-gray-800" title={doc.name}>
                       {doc.name}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {doc.chunkCount} {doc.chunkCount === 1 ? "chunk" : "chunks"}
                     </p>
                   </div>
                   <button
