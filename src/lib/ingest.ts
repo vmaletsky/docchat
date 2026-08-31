@@ -1,70 +1,78 @@
-/**
- * Document ingestion pipeline:
- *   Upload → Extract per-page text → Chunk → Embed → Store in pgvector
- *
- * This is the "backend" of the RAG system. Each step is explicit
- * and testable — no LangChain magic.
- */
-
 import { db } from "@/db";
 import { documents, chunks, type NewChunk } from "@/db/schema";
 import { chunkText } from "./chunker";
 import { embedTexts } from "./embeddings";
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { createHash } from "crypto";
-import pdfParse from "pdf-parse";
+import { callParser } from "./parser";
+import { deleteFromS3 } from "./storage";
 
-/** pdf-parse can emit null bytes; Postgres rejects them in text columns. */
+/** Parser service can return null bytes; Postgres rejects them in text columns. */
 function stripNullBytes(text: string): string {
   return text.replace(/\u0000/g, "");
 }
 
+// If the waitUntil invocation running runIngest is killed (timeout, cold-start
+// eviction, etc.) before its catch block runs, a document is left stuck in
+// "processing" forever with no error and nothing polling it. This TTL bounds
+// how long we wait before treating it as failed.
+const STUCK_INGEST_TIMEOUT_MS = 10 * 60 * 1000;
+
+type CreateDocumentResult = {
+  documentId: string;
+  buffer: Buffer;
+  deduplicated: boolean;
+  status: "processing" | "ready";
+  needsIngest: boolean;
+};
+
+type ExistingDocument = {
+  id: string;
+  status: "processing" | "ready" | "error";
+};
+
+async function findDuplicate(
+  userId: string,
+  contentHash: string
+): Promise<ExistingDocument | undefined> {
+  const [existing] = await db
+    .select({ id: documents.id, status: documents.status })
+    .from(documents)
+    .where(and(eq(documents.userId, userId), eq(documents.contentHash, contentHash)))
+    .limit(1);
+  return existing;
+}
+
 /**
- * Extract a PDF as an ordered array of per-page text using pdf-parse's
- * `pagerender` hook, which is invoked once per page with that page's
- * pdf.js page proxy. Index `i` holds page `i + 1`'s text.
- *
- * The text comes from pdf.js `getTextContent()` — real extracted text,
- * not OCR — so scanned/image-only pages yield an empty string.
+ * A duplicate whose previous ingest failed is reset to "processing" (with any
+ * partial chunks cleared) so the caller re-runs the pipeline; otherwise the
+ * duplicate is returned with its actual status.
  */
-async function extractPages(buffer: Buffer): Promise<string[]> {
-  const pages: string[] = [];
-
-  await pdfParse(buffer, {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    pagerender: async (pageData: any) => {
-      const textContent = await pageData.getTextContent({
-        normalizeWhitespace: false,
-        disableCombineTextItems: false,
-      });
-
-      // Reconstruct text, inserting a newline whenever the vertical
-      // position changes (mirrors pdf-parse's default renderer, which
-      // preserves line breaks for cleaner chunk boundaries).
-      let lastY: number | undefined;
-      let text = "";
-      for (const item of textContent.items as Array<{
-        str: string;
-        transform: number[];
-      }>) {
-        if (lastY === undefined || lastY === item.transform[5]) {
-          text += item.str;
-        } else {
-          text += "\n" + item.str;
-        }
-        lastY = item.transform[5];
-      }
-
-      // pdf-parse processes pages in order; pageNumber is 1-based.
-      const pageNumber: number = pageData.pageNumber ?? pages.length + 1;
-      pages[pageNumber - 1] = stripNullBytes(text);
-
-      // Returned value flows into the (unused) concatenated `data.text`.
-      return text;
-    },
-  });
-
-  return pages;
+async function resolveDuplicate(
+  existing: ExistingDocument,
+  buffer: Buffer
+): Promise<CreateDocumentResult> {
+  if (existing.status === "error") {
+    await db.delete(chunks).where(eq(chunks.documentId, existing.id));
+    await db
+      .update(documents)
+      .set({ status: "processing", errorMessage: null })
+      .where(eq(documents.id, existing.id));
+    return {
+      documentId: existing.id,
+      buffer,
+      deduplicated: true,
+      status: "processing",
+      needsIngest: true,
+    };
+  }
+  return {
+    documentId: existing.id,
+    buffer,
+    deduplicated: true,
+    status: existing.status,
+    needsIngest: false,
+  };
 }
 
 /**
@@ -74,18 +82,13 @@ async function extractPages(buffer: Buffer): Promise<string[]> {
 export async function createDocumentRecord(
   file: File,
   userId: string
-): Promise<{ documentId: string; buffer: Buffer; deduplicated: boolean }> {
+): Promise<CreateDocumentResult> {
   const buffer = Buffer.from(await file.arrayBuffer());
   const contentHash = createHash("sha256").update(buffer).digest("hex");
 
-  const [existing] = await db
-    .select({ id: documents.id })
-    .from(documents)
-    .where(and(eq(documents.userId, userId), eq(documents.contentHash, contentHash)))
-    .limit(1);
-
+  const existing = await findDuplicate(userId, contentHash);
   if (existing) {
-    return { documentId: existing.id, buffer, deduplicated: true };
+    return resolveDuplicate(existing, buffer);
   }
 
   const [doc] = await db
@@ -97,37 +100,57 @@ export async function createDocumentRecord(
       status: "processing",
       contentHash,
     })
+    .onConflictDoNothing({ target: [documents.userId, documents.contentHash] })
     .returning({ id: documents.id });
 
-  return { documentId: doc.id, buffer, deduplicated: false };
+  if (!doc) {
+    // A concurrent upload of the same file won the insert race.
+    const winner = await findDuplicate(userId, contentHash);
+    if (!winner) {
+      throw new Error("Failed to create document record");
+    }
+    return resolveDuplicate(winner, buffer);
+  }
+
+  return {
+    documentId: doc.id,
+    buffer,
+    deduplicated: false,
+    status: "processing",
+    needsIngest: true,
+  };
 }
 
 /**
- * Run the full ingest pipeline for a document that already has a DB record.
+ * Run the full ingest pipeline for a document already stored in S3.
  * Intended to be passed to waitUntil() so it runs after the HTTP response.
+ * Deletes the S3 object on success (non-fatal if the delete fails).
  */
 export async function runIngest(
   documentId: string,
-  buffer: Buffer
+  s3Key: string
 ): Promise<void> {
   try {
-    const pages = await extractPages(buffer);
+    const parseResult = await callParser(documentId, s3Key);
 
-    if (pages.every((p) => !p || p.trim().length === 0)) {
+    const textPages = parseResult.pages
+      .filter((p) => p.has_text && p.text.trim().length > 0)
+      .map((p) => ({ pageNumber: p.page_number, text: stripNullBytes(p.text) }));
+
+    if (textPages.length === 0) {
       throw new Error("No text could be extracted from this PDF");
     }
 
     const pending: Array<{ content: string; pageNumber: number }> = [];
-    pages.forEach((pageText, pageIdx) => {
-      if (!pageText || pageText.trim().length === 0) return;
-      const pageChunks = chunkText(pageText, {
+    for (const page of textPages) {
+      const pageChunks = chunkText(page.text, {
         maxChunkSize: 1000,
         overlapSize: 200,
       });
       for (const c of pageChunks) {
-        pending.push({ content: c.content, pageNumber: pageIdx + 1 });
+        pending.push({ content: c.content, pageNumber: page.pageNumber });
       }
-    });
+    }
 
     if (pending.length === 0) {
       throw new Error("Document produced no chunks after splitting");
@@ -148,11 +171,20 @@ export async function runIngest(
       await db.insert(chunks).values(chunkRecords.slice(i, i + BATCH_SIZE));
     }
 
-    const charCount = pages.reduce((sum, p) => sum + (p?.length ?? 0), 0);
     await db
       .update(documents)
-      .set({ status: "ready", charCount, chunkCount: chunkRecords.length })
+      .set({
+        status: "ready",
+        charCount: parseResult.metadata.total_char_count,
+        chunkCount: chunkRecords.length,
+      })
       .where(eq(documents.id, documentId));
+
+    try {
+      await deleteFromS3(s3Key);
+    } catch (err) {
+      console.error("Failed to delete S3 object after ingest:", err);
+    }
   } catch (error) {
     await db
       .update(documents)
@@ -162,5 +194,36 @@ export async function runIngest(
           error instanceof Error ? error.message : "Unknown error occurred",
       })
       .where(eq(documents.id, documentId));
+  }
+}
+
+/**
+ * Flip documents stuck in "processing" past STUCK_INGEST_TIMEOUT_MS to
+ * "error" so the UI stops polling them and the existing re-upload retry
+ * path (resolveDuplicate) can take over. Scoped to one user and intended to
+ * run opportunistically (e.g. on each GET /api/documents).
+ */
+export async function sweepStuckDocuments(userId: string): Promise<void> {
+  const cutoff = new Date(Date.now() - STUCK_INGEST_TIMEOUT_MS);
+
+  const stuck = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(
+      and(
+        eq(documents.userId, userId),
+        eq(documents.status, "processing"),
+        lt(documents.createdAt, cutoff)
+      )
+    );
+
+  for (const doc of stuck) {
+    await db
+      .update(documents)
+      .set({
+        status: "error",
+        errorMessage: "Processing timed out. Please try uploading again.",
+      })
+      .where(eq(documents.id, doc.id));
   }
 }

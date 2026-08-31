@@ -19,6 +19,7 @@ export interface DocumentItem {
   id: string;
   name: string;
   status: "processing" | "ready" | "error";
+  errorMessage?: string | null;
   createdAt: string;
 }
 
@@ -263,7 +264,10 @@ export function DocumentsTree({
                       <ChevronRight size={14} />
                     )}
                   </span>
-                  <StatusIcon status={doc.status} />
+                  <StatusIcon
+                    status={doc.status}
+                    errorMessage={doc.errorMessage}
+                  />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-gray-800" title={doc.name}>
                       {doc.name}
@@ -336,13 +340,42 @@ export function DocumentsTree({
   );
 }
 
-function StatusIcon({ status }: { status: DocumentItem["status"] }) {
+function StatusIcon({
+  status,
+  errorMessage,
+}: {
+  status: DocumentItem["status"];
+  errorMessage?: string | null;
+}) {
   if (status === "ready")
-    return <CheckCircle2 size={16} className="shrink-0 text-green-600" />;
+    return (
+      <CheckCircle2
+        size={16}
+        className="shrink-0 text-green-600"
+        data-testid="status-icon-ready"
+      />
+    );
   if (status === "error")
-    return <AlertCircle size={16} className="shrink-0 text-red-600" />;
+    return (
+      <span
+        className="shrink-0"
+        title={errorMessage ?? "Failed to process document"}
+      >
+        <AlertCircle
+          size={16}
+          className="text-red-600"
+          data-testid="status-icon-error"
+        />
+      </span>
+    );
   if (status === "processing")
-    return <Loader2 size={16} className="shrink-0 animate-spin text-gray-400" />;
+    return (
+      <Loader2
+        size={16}
+        className="shrink-0 animate-spin text-gray-400"
+        data-testid="status-icon-processing"
+      />
+    );
   return <FileText size={16} className="shrink-0 text-gray-400" />;
 }
 

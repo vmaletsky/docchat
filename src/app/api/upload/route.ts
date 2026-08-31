@@ -5,10 +5,14 @@
  */
 
 import { createDocumentRecord, runIngest } from "@/lib/ingest";
+import { uploadToS3 } from "@/lib/storage";
 import { waitUntil } from "@vercel/functions";
 import { auth } from "@/auth";
 import { NextRequest } from "next/server";
 import { uploadRatelimit } from "@/lib/ratelimit";
+import { db } from "@/db";
+import { documents } from "@/db/schema";
+import { eq } from "drizzle-orm";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 const ALLOWED_TYPES = ["application/pdf"];
@@ -56,11 +60,32 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { documentId, buffer, deduplicated } = await createDocumentRecord(file, session.user.id);
-    if (!deduplicated) {
-      waitUntil(runIngest(documentId, buffer));
+    const userId = session.user.id;
+    const { documentId, buffer, deduplicated, status, needsIngest } =
+      await createDocumentRecord(file, userId);
+
+    if (!needsIngest) {
+      return Response.json({ documentId, status, deduplicated });
     }
-    return Response.json({ documentId, status: deduplicated ? "ready" : "processing", deduplicated });
+
+    const s3Key = `uploads/${userId}/${documentId}.pdf`;
+
+    try {
+      await uploadToS3(buffer, s3Key);
+    } catch (uploadError) {
+      await db
+        .update(documents)
+        .set({
+          status: "error",
+          errorMessage:
+            uploadError instanceof Error ? uploadError.message : "S3 upload failed",
+        })
+        .where(eq(documents.id, documentId));
+      return Response.json({ error: "Failed to upload document" }, { status: 500 });
+    }
+
+    waitUntil(runIngest(documentId, s3Key));
+    return Response.json({ documentId, status: "processing", deduplicated });
   } catch (error) {
     console.error("Upload processing error:", error);
     return Response.json(

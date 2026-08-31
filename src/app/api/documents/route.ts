@@ -6,6 +6,7 @@
 import { db } from "@/db";
 import { documents } from "@/db/schema";
 import { auth } from "@/auth";
+import { sweepStuckDocuments } from "@/lib/ingest";
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 
@@ -14,6 +15,8 @@ export async function GET() {
   if (!session?.user?.id) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  await sweepStuckDocuments(session.user.id);
 
   const docs = await db
     .select()

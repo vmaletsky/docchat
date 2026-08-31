@@ -1,7 +1,7 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 
-const PUBLIC_PATHS = ["/signin", "/api/auth"];
+const PUBLIC_PATHS = ["/signin", "/register", "/api/auth", "/api/register"];
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
@@ -13,7 +13,7 @@ export default auth((req) => {
     return NextResponse.redirect(signinUrl);
   }
 
-  if (req.auth && pathname === "/signin") {
+  if (req.auth && (pathname === "/signin" || pathname === "/register")) {
     return NextResponse.redirect(new URL("/", req.nextUrl.origin));
   }
 

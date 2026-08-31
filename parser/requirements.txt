@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pdfplumber==0.11.4
+pymupdf==1.25.1
+boto3==1.35.86
+pydantic==2.10.3
+python-multipart==0.0.20
+
+# test deps
+pytest==8.3.4
+httpx==0.28.1
+pytest-asyncio==0.25.0

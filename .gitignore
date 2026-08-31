@@ -38,3 +38,17 @@ next-env.d.ts
 
 # vercel
 .vercel
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+
+# python (parser service)
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

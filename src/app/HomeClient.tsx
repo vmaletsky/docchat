@@ -18,7 +18,9 @@ import {
   type ConversationItem,
 } from "@/components/documents/DocumentsTree";
 
-type UploadState = "idle" | "uploading" | "ready" | "error";
+type UploadState = "idle" | "uploading" | "processing" | "ready" | "error";
+
+const STATUS_POLL_INTERVAL_MS = 2500;
 
 interface Source {
   index: number;
@@ -59,6 +61,38 @@ export default function HomeClient() {
     const t = setTimeout(() => setDuplicateNotice(false), 4000);
     return () => clearTimeout(t);
   }, [duplicateNotice]);
+
+  // While the active document is ingesting, poll until it becomes ready or errors.
+  useEffect(() => {
+    if (uploadState !== "processing" || !documentId) return;
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const res = await fetch("/api/documents");
+        if (!res.ok || cancelled) return;
+        const docs: DocumentItem[] = await res.json();
+        const doc = docs.find((d) => d.id === documentId);
+        if (!doc || cancelled) return;
+        if (doc.status === "ready") {
+          setUploadState("ready");
+          setSidebarRefreshKey((k) => k + 1);
+        } else if (doc.status === "error") {
+          setUploadState("error");
+          setErrorMessage(doc.errorMessage ?? "Failed to process document.");
+          setSidebarRefreshKey((k) => k + 1);
+        }
+      } catch {
+        // Transient network error — keep polling.
+      }
+    }
+
+    const interval = setInterval(poll, STATUS_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [uploadState, documentId]);
 
   function resetSession() {
     setDocumentId(null);
@@ -104,10 +138,14 @@ export default function HomeClient() {
       }
       const data = await res.json();
       setDocumentId(data.documentId);
-      setUploadState("ready");
       setSidebarRefreshKey((k) => k + 1);
-      if (data.deduplicated) {
-        setDuplicateNotice(true);
+      if (data.status === "ready") {
+        setUploadState("ready");
+        if (data.deduplicated) {
+          setDuplicateNotice(true);
+        }
+      } else {
+        setUploadState("processing");
       }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Upload failed");
@@ -143,8 +181,12 @@ export default function HomeClient() {
     setDocumentId(doc.id);
     setConversationId(null);
     setMessages([]);
-    setErrorMessage(null);
-    setUploadState("ready");
+    setErrorMessage(
+      doc.status === "error"
+        ? (doc.errorMessage ?? "Failed to process document.")
+        : null,
+    );
+    setUploadState(doc.status);
     setMobileDrawerOpen(false);
   }
 
@@ -310,10 +352,14 @@ export default function HomeClient() {
         <div className="flex flex-col flex-1 min-h-0 p-4">
           <div className="w-full max-w-2xl mx-auto flex flex-col flex-1 min-h-0">
             {/* Status banners */}
-            {uploadState === "uploading" && (
+            {(uploadState === "uploading" || uploadState === "processing") && (
               <div className="flex items-center gap-2 text-sm text-gray-600 shrink-0 pb-2">
                 <Loader2 size={16} className="animate-spin" />
-                <span>Processing document…</span>
+                <span>
+                  {uploadState === "uploading"
+                    ? "Uploading…"
+                    : "Processing document… chat will unlock when it's ready."}
+                </span>
               </div>
             )}
 
@@ -363,7 +409,9 @@ export default function HomeClient() {
                 placeholder={
                   uploadState === "ready"
                     ? "Ask a question about your document..."
-                    : "Upload a document first..."
+                    : uploadState === "processing"
+                      ? "Processing document..."
+                      : "Upload a document first..."
                 }
                 disabled={uploadState !== "ready" || isStreaming}
                 className="flex-1"
